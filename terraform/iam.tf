@@ -14,6 +14,20 @@ resource "google_project_iam_member" "dataproc_worker" {
   member  = "serviceAccount:${google_service_account.dataproc_sa.email}"
 }
 
+resource "google_project_iam_member" "dataproc_editor" {
+  project = var.project_id
+  role    = "roles/dataproc.editor"
+  member  = "serviceAccount:${google_service_account.dataproc_sa.email}"
+}
+
+# Required for Dataproc Serverless: the submitter SA must be able to act as
+# the execution SA, even when they are the same account.
+resource "google_service_account_iam_member" "dataproc_sa_self_impersonation" {
+  service_account_id = google_service_account.dataproc_sa.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.dataproc_sa.email}"
+}
+
 resource "google_project_iam_member" "dataproc_gcs_access" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"

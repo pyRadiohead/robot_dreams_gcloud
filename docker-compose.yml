@@ -20,6 +20,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__SECRET_KEY: 'local-dev-secret-key-change-in-prod'
     # GCP authentication via service account key
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp/sa-key.json
+    # Creates the google_cloud_default connection automatically from the mounted SA key
+    AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: "google-cloud-platform://?key_path=%2Fopt%2Fairflow%2Fgcp%2Fsa-key.json&project=${GCP_PROJECT_ID}"
     # Custom env vars for DAGs (sourced from .env)
     GCP_PROJECT_ID: ${GCP_PROJECT_ID}
     GCP_REGION: ${GCP_REGION}
