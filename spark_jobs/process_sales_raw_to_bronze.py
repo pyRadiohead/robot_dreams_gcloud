@@ -42,6 +42,7 @@ raw_df = (
     .schema(schema)
     .option("header", True)
     .option("multiLine", False)
+    .option("recursiveFileLookup", "true")
     .csv(args.raw_input)
 )
 

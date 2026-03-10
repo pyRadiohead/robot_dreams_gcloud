@@ -45,11 +45,13 @@ cleaned_df = (
     .dropna(subset=["CustomerId", "PurchaseDate"])
 )
 
-# ── 6. Add metadata columns ────────────────────────────────────────────────
-silver_df = (
-    cleaned_df
-    .withColumn("processed_at", F.current_timestamp())
-    .withColumnRenamed("price_clean", "price")
+# ── 6. Final select — rename columns, drop originals, add metadata ──────────
+silver_df = cleaned_df.select(
+    F.col("CustomerId").alias("client_id"),
+    F.col("PurchaseDate").alias("purchase_date"),
+    F.col("Product").alias("product_name"),
+    F.col("price_clean").alias("price"),
+    F.current_timestamp().alias("processed_at"),
 )
 
 silver_count = silver_df.count()

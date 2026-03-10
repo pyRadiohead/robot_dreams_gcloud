@@ -27,7 +27,7 @@ BQ_DATASET     = os.environ.get("BIGQUERY_GOLD_DATASET", "gold")
 
 DATAPROC_SA = f"dataproc-spark-sa@{PROJECT_ID}.iam.gserviceaccount.com"
 
-BATCH_ID    = "enrich-customers-{{ ds_nodash }}-{{ ts_nodash }}"
+BATCH_ID    = "enrich-customers-{{ ds_nodash }}"
 PYSPARK_URI = f"gs://{SCRIPTS_BUCKET}/jobs/enrich_customers.py"
 
 default_args = {

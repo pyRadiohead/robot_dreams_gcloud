@@ -24,7 +24,7 @@ SCRIPTS_BUCKET = os.environ.get("SCRIPTS_BUCKET", "robot-dream-course-scripts")
 
 DATAPROC_SA = f"dataproc-spark-sa@{PROJECT_ID}.iam.gserviceaccount.com"
 
-BATCH_ID       = "process-user-profiles-{{ ds_nodash }}-{{ ts_nodash }}"
+BATCH_ID       = "process-user-profiles-{{ ds_nodash }}"
 PYSPARK_URI    = f"gs://{SCRIPTS_BUCKET}/jobs/process_user_profiles_to_silver.py"
 
 default_args = {
@@ -52,7 +52,7 @@ with DAG(
             "pyspark_batch": {
                 "main_python_file_uri": PYSPARK_URI,
                 "args": [
-                    f"--raw_input=gs://{DATA_LAKE}/raw/user_profiles/",
+                    f"--raw_input=gs://{DATA_LAKE}/raw/data/user_profiles/",
                     f"--silver_output=gs://{DATA_LAKE}/silver/user_profiles/",
                 ],
             },

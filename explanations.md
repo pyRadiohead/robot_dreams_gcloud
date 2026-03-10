@@ -559,3 +559,635 @@ df = df.select("id", "price", "state", "purchase_date")  # drop the rest
 # ✅ Use built-in functions instead
 df = df.withColumn("price_clean", F.regexp_replace(F.col("price"), "[^0-9.]", ""))
 ```
+
+---
+
+## 🏅 Final Analytical Task
+
+> **In which state were the most TVs purchased by customers aged 20–30 in the first decade of September?**
+
+The gold layer (`gold.user_profiles_enriched`) holds enriched customer data. Silver sales (`silver/sales/`) is stored in GCS as Parquet. To query both together in BigQuery, first expose silver/sales as a BigQuery external table, then join and aggregate.
+
+### Step 1 — Create external table for silver/sales
+
+```sql
+CREATE OR REPLACE EXTERNAL TABLE `robot-dream-course.silver.sales`
+OPTIONS (
+  format = 'PARQUET',
+  uris   = ['gs://robot-dream-course-data-lake/silver/sales/*.parquet',
+             'gs://robot-dream-course-data-lake/silver/sales/**/*.parquet']
+);
+```
+
+> 💡 This requires the `silver` dataset to exist. Create it if needed:
+> ```bash
+> bq mk --dataset --location=us-central1 robot-dream-course:silver
+> ```
+
+### Step 2 — Run the analytical query
+
+```sql
+SELECT
+    e.state,
+    COUNT(*)  AS tv_purchases
+FROM `robot-dream-course.silver.sales`  AS s
+JOIN `robot-dream-course.gold.user_profiles_enriched` AS e
+    ON s.client_id = e.client_id
+WHERE
+    s.product_name = 'TV'
+    AND e.age BETWEEN 20 AND 30
+    AND EXTRACT(MONTH FROM s.purchase_date) = 9
+    AND EXTRACT(DAY   FROM s.purchase_date) BETWEEN 1 AND 10
+GROUP BY e.state
+ORDER BY tv_purchases DESC
+LIMIT 1;
+```
+
+### Via `bq` CLI
+
+```bash
+bq query --use_legacy_sql=false \
+  --project_id=robot-dream-course \
+'SELECT
+    e.state,
+    COUNT(*) AS tv_purchases
+FROM `robot-dream-course.silver.sales` AS s
+JOIN `robot-dream-course.gold.user_profiles_enriched` AS e
+    ON s.client_id = e.client_id
+WHERE
+    s.product_name = "TV"
+    AND e.age BETWEEN 20 AND 30
+    AND EXTRACT(MONTH FROM s.purchase_date) = 9
+    AND EXTRACT(DAY   FROM s.purchase_date) BETWEEN 1 AND 10
+GROUP BY e.state
+ORDER BY tv_purchases DESC
+LIMIT 1'
+```
+
+**Prerequisites before running:**
+1. `process_sales` DAG completed (silver/sales populated in GCS)
+2. `process_customers` + `process_user_profiles` DAGs completed
+3. `enrich_customers` DAG completed (`gold.user_profiles_enriched` in BigQuery)
+4. External table `silver.sales` created (Step 1 above)
+
+---
+
+## 🗄️ BigQuery via gcloud / bq CLI
+
+BigQuery has its own CLI tool `bq` that ships with the Google Cloud SDK alongside `gcloud`. Both are used for BigQuery operations.
+
+### 🔧 Setup
+
+```bash
+# Authenticate
+gcloud auth login
+gcloud config set project robot-dream-course
+
+# bq uses the same auth as gcloud — no separate login needed
+bq show --project_id=robot-dream-course
+```
+
+---
+
+### 📁 Datasets
+
+```bash
+# List all datasets in project
+bq ls --project_id=robot-dream-course
+
+# Create a dataset
+bq mk --dataset \
+  --location=us-central1 \
+  --description="Gold layer" \
+  robot-dream-course:gold
+
+# Delete a dataset (and all tables inside)
+bq rm -r -f robot-dream-course:gold
+
+# Show dataset details (location, labels, etc.)
+bq show robot-dream-course:gold
+```
+
+---
+
+### 📋 Tables
+
+```bash
+# List tables in a dataset
+bq ls robot-dream-course:gold
+
+# Show table schema
+bq show robot-dream-course:gold.user_profiles_enriched
+
+# Show table schema in JSON (useful for scripting)
+bq show --format=prettyjson robot-dream-course:gold.user_profiles_enriched \
+  | jq '.schema.fields'
+
+# Preview first 10 rows
+bq head -n 10 robot-dream-course:gold.user_profiles_enriched
+
+# Row count
+bq query --use_legacy_sql=false \
+  'SELECT COUNT(*) FROM `robot-dream-course.gold.user_profiles_enriched`'
+
+# Delete a table
+bq rm -f robot-dream-course:gold.user_profiles_enriched
+```
+
+---
+
+### 🔍 Running Queries
+
+```bash
+# Inline query (standard SQL)
+bq query --use_legacy_sql=false \
+  'SELECT state, COUNT(*) AS cnt
+   FROM `robot-dream-course.gold.user_profiles_enriched`
+   GROUP BY state
+   ORDER BY cnt DESC
+   LIMIT 10'
+
+# Query from a .sql file
+bq query --use_legacy_sql=false < my_query.sql
+
+# Save results to a table
+bq query --use_legacy_sql=false \
+  --destination_table=robot-dream-course:gold.query_results \
+  --replace \
+  'SELECT * FROM `robot-dream-course.gold.user_profiles_enriched` WHERE age < 25'
+
+# Dry run — estimate bytes scanned before running (cost check)
+bq query --use_legacy_sql=false --dry_run \
+  'SELECT * FROM `robot-dream-course.gold.user_profiles_enriched`'
+```
+
+---
+
+### 📤 Loading Data
+
+```bash
+# Load CSV from GCS into a table
+bq load \
+  --source_format=CSV \
+  --skip_leading_rows=1 \
+  --autodetect \
+  robot-dream-course:bronze.sales \
+  'gs://robot-dream-course-data-lake/bronze/sales/*.csv'
+
+# Load Parquet from GCS
+bq load \
+  --source_format=PARQUET \
+  robot-dream-course:silver.customers \
+  'gs://robot-dream-course-data-lake/silver/customers/*.parquet'
+```
+
+---
+
+### 🔗 External Tables (query GCS Parquet directly)
+
+External tables let BigQuery query files in GCS without loading them — data stays in GCS, BigQuery just reads it on demand.
+
+```bash
+# Create external table pointing to GCS Parquet
+bq mkdef \
+  --source_format=PARQUET \
+  'gs://robot-dream-course-data-lake/silver/sales/*.parquet' \
+  > /tmp/silver_sales_def.json
+
+bq mk \
+  --external_table_definition=/tmp/silver_sales_def.json \
+  robot-dream-course:silver.sales
+```
+
+Or directly in SQL (simpler):
+
+```sql
+CREATE OR REPLACE EXTERNAL TABLE `robot-dream-course.silver.sales`
+OPTIONS (
+  format = 'PARQUET',
+  uris   = ['gs://robot-dream-course-data-lake/silver/sales/**']
+);
+```
+
+| Feature | Native Table | External Table |
+|---------|-------------|----------------|
+| Storage | BigQuery managed | GCS (your bucket) |
+| Query speed | Fast | Slower (reads GCS each time) |
+| Cost | Storage + query | Query only (no BQ storage cost) |
+| Best for | Gold layer, frequent queries | Silver layer, occasional analytics |
+
+---
+
+### ⚙️ Jobs & Monitoring
+
+```bash
+# List recent BigQuery jobs
+bq ls --jobs --all --max_results=10 --project_id=robot-dream-course
+
+# Show specific job details (find id from ls above)
+bq show --job --project_id=robot-dream-course <job_id>
+
+# Cancel a running job
+bq cancel --project_id=robot-dream-course <job_id>
+```
+
+---
+
+### 💡 Best Practices
+
+| Practice | Why |
+|----------|-----|
+| Always use `--use_legacy_sql=false` | Legacy SQL is outdated; standard SQL is the default in console but not in CLI |
+| Use `--dry_run` before large queries | Estimates bytes scanned → cost before committing |
+| Partition gold tables by date | Queries that filter by date scan only relevant partitions, reducing cost |
+| Prefer external tables for silver | Avoids double-storing data already in GCS |
+| Use `bq show` before deleting | Confirm you're deleting the right table/dataset |
+| Prefer `bq query` over `gcloud` for SQL | `gcloud` doesn't have native BigQuery query support — `bq` is the right tool |
+
+---
+
+## 🔗 Data Enrichment — `enrich_customers.py`
+
+Enrichment is the process of combining two or more data sources to fill missing fields and add new ones. In this pipeline, `silver/customers` has incomplete data (missing state, names) — `silver/user_profiles` provides the missing pieces. The join key is `email`.
+
+### Why left join?
+
+```python
+joined_df = customers_df.alias("c").join(user_profiles_df.alias("up"), on="email", how="left")
+```
+
+A **left join** preserves all customer rows even if no matching user_profile exists. This matters because:
+- Not every customer may have a user_profile (they registered before profiles were collected)
+- Losing customers in gold would break downstream analytics (under-counting by state/age)
+- Customers without a profile get `null` for `birth_date`, `age`, `phone_number` — which is correct and queryable
+
+An **inner join** would silently drop every customer without a profile.
+
+---
+
+### Why alias both DataFrames?
+
+After joining two DataFrames that share column names (both have `first_name`, `last_name`, `state`), Spark cannot resolve `F.col("first_name")` — it's ambiguous. Aliasing with `.alias("c")` and `.alias("up")` gives each side a namespace:
+
+```python
+F.col("c.first_name")   # customers side
+F.col("up.first_name")  # user_profiles side
+```
+
+Without aliases, Spark raises `AnalysisException: Reference 'first_name' is ambiguous`.
+
+---
+
+### `coalesce()` for null-filling
+
+```python
+.withColumn("first_name", F.coalesce(F.col("c.first_name"), F.col("up.first_name")))
+.withColumn("last_name",  F.coalesce(F.col("c.last_name"),  F.col("up.last_name")))
+.withColumn("state",      F.coalesce(F.col("c.state"),      F.col("up.state")))
+```
+
+`coalesce(a, b)` returns the **first non-null value** left-to-right. The ordering is intentional:
+- **Customer data is preferred** (`c.*` is listed first) — if a customer already has a state, we keep it
+- **User profile fills the gap** — only used when the customer field is null
+
+This is safer than unconditionally overwriting customer fields with profile data, which could replace verified customer data with inferred profile data.
+
+---
+
+### Derived `age` field
+
+```python
+.withColumn("age", F.floor(F.datediff(F.current_date(), F.col("up.birth_date")) / 365.25))
+```
+
+| Part | Explanation |
+|------|-------------|
+| `F.datediff(current_date, birth_date)` | Returns total days since birth as integer |
+| `/ 365.25` | Converts days to years; `365.25` accounts for leap years (every 4 years adds 0.25 day/year average) |
+| `F.floor(...)` | Rounds down to full years completed — `29.9` → `29`, matching how age works legally |
+
+The field comes from `up.birth_date` (not `c.*`) because customers Silver has no birth date — it only exists in user_profiles.
+
+---
+
+### Field source summary
+
+| Output column | Source | Logic |
+|---------------|--------|-------|
+| `client_id` | customers | Direct |
+| `email` | customers (join key) | Direct |
+| `first_name` | customers → user_profiles | `coalesce(c, up)` |
+| `last_name` | customers → user_profiles | `coalesce(c, up)` |
+| `registration_date` | customers | Direct |
+| `state` | customers → user_profiles | `coalesce(c, up)` |
+| `birth_date` | user_profiles | Direct (null if no profile) |
+| `age` | user_profiles | Derived from birth_date |
+| `phone_number` | user_profiles | Direct (null if no profile) |
+| `processed_at` | runtime | `F.current_timestamp()` |
+
+---
+
+### Writing to BigQuery
+
+```python
+spark.conf.set("temporaryGcsBucket", args.bq_temp_bucket)
+
+enriched_df.write.format("bigquery") \
+    .option("table", bq_table) \
+    .mode("overwrite") \
+    .save()
+```
+
+The `spark-bigquery-connector` requires a `temporaryGcsBucket` because:
+1. Spark serializes data to GCS as intermediate Avro/Parquet files
+2. BigQuery then loads from those files internally
+3. The temp files are automatically cleaned up after load
+
+Without `temporaryGcsBucket`, the write will fail with a missing bucket error. The bucket must be in the same region as the BigQuery dataset (`us-central1` in this project).
+
+---
+
+## 🐛 Debugging the Full Pipeline — Issues Found and Fixed
+
+This section documents every issue encountered when running the complete pipeline end-to-end (raw → bronze → silver → gold → BigQuery → analytical query), in the order they appeared.
+
+---
+
+### Issue 1: `recursiveFileLookup` — Spark reads 0 rows from nested GCS folders
+
+**Symptom:** `process_sales_raw_to_bronze.py` wrote 0 rows to bronze, despite raw CSVs being present in GCS.
+
+**Root cause:** Raw data lives in date-partitioned subdirectories:
+```
+gs://robot-dream-course-data-lake/raw/sales/
+  ├── 2022-09-1/2022-09-1__sales.csv
+  ├── 2022-09-2/2022-09-2__sales.csv
+  └── ...
+```
+
+`spark.read.csv("gs://bucket/raw/sales/")` by default only reads files **directly** in the specified directory. The CSV files are one level deeper (inside date folders), so Spark found zero files.
+
+**Fix:** Add `recursiveFileLookup` option to recurse into subdirectories:
+```python
+# Before (0 rows)
+raw_df = spark.read.schema(schema).option("header", True).csv(args.raw_input)
+
+# After (71,085 rows)
+raw_df = (
+    spark.read
+    .schema(schema)
+    .option("header", True)
+    .option("recursiveFileLookup", "true")   # ← recurse into subdirs
+    .csv(args.raw_input)
+)
+```
+
+**Applied to:** `process_sales_raw_to_bronze.py`, `process_customers_raw_to_bronze.py`
+
+> ⚠️ `recursiveFileLookup` disables partition discovery (Spark won't infer partition columns from folder names like `year=2022/`). This is fine for our use case — we don't need Spark to infer partitions from raw data paths.
+
+---
+
+### Issue 2: `COLUMN_ALREADY_EXISTS` — Parquet case-insensitive column conflict
+
+**Symptom:** `process_sales_bronze_to_silver.py` failed with:
+```
+AnalysisException: [COLUMN_ALREADY_EXISTS] The column `price` already exists.
+```
+
+**Root cause:** The bronze Parquet has a column called `Price` (capital P, from the original CSV). The script created a `price_clean` column, then tried to rename it:
+```python
+.withColumnRenamed("price_clean", "price")   # creates lowercase "price"
+```
+Now the DataFrame has BOTH `Price` (original) and `price` (renamed). Parquet is case-insensitive for column names, so it sees two columns with the same name.
+
+**Fix:** Replace the rename with a clean `.select()` that picks only the desired columns:
+```python
+# Before — leaves original Price in DataFrame
+silver_df = cleaned_df.withColumn("processed_at", F.current_timestamp()) \
+                      .withColumnRenamed("price_clean", "price")
+
+# After — explicit column list, no name conflicts
+silver_df = cleaned_df.select(
+    F.col("CustomerId").alias("client_id"),
+    F.col("PurchaseDate").alias("purchase_date"),
+    F.col("Product").alias("product_name"),
+    F.col("price_clean").alias("price"),          # clean rename
+    F.current_timestamp().alias("processed_at"),
+)
+```
+
+> 💡 **Best practice:** After joins or transformations that add/rename columns, prefer `.select()` with an explicit column list over `.withColumnRenamed()`. It makes the output schema obvious and prevents ghost columns from surviving.
+
+---
+
+### Issue 3: `UNRESOLVED_COLUMN` — Alias invalidation after chained `.withColumn()`
+
+**Symptom:** `enrich_customers.py` failed with:
+```
+AnalysisException: [UNRESOLVED_COLUMN.WITH_SUGGESTION]
+A column or function parameter with name `up`.`birth_date` cannot be resolved.
+Did you mean one of the following? [`birth_date`, `first_name`, `first_name`, `last_name`, `last_name`]
+```
+
+**Root cause:** After a join with aliases (`c` and `up`), chaining `.withColumn()` calls invalidates alias references:
+
+```python
+joined_df = customers.alias("c").join(profiles.alias("up"), on="email", how="left")
+
+enriched = (
+    joined_df
+    .withColumn("first_name", F.coalesce(F.col("c.first_name"), F.col("up.first_name")))
+    # ↑ This creates a NEW top-level "first_name" column.
+    #   The DataFrame schema now has: c.first_name, up.first_name, AND first_name.
+    #   Spark's internal alias resolution gets confused.
+
+    .withColumn("birth_date", F.col("up.birth_date"))
+    # ↑ FAILS: "up.birth_date" can no longer be resolved because
+    #   the previous .withColumn() mutated the DataFrame schema
+    #   and invalidated the "up" alias namespace.
+)
+```
+
+The suggestion in the error (`Did you mean: birth_date, first_name, first_name`) shows the duplicate columns — two `first_name` columns exist (from `c` and `up`), plus the new one created by `withColumn`.
+
+**Fix:** Resolve ALL alias references in a single `.select()`:
+```python
+# All c.* and up.* references are resolved in one pass — no alias invalidation
+enriched_df = joined_df.select(
+    F.col("c.client_id").cast("long"),
+    F.col("email"),
+    F.coalesce(F.col("c.first_name"), F.col("up.first_name")).alias("first_name"),
+    F.coalesce(F.col("c.last_name"),  F.col("up.last_name")).alias("last_name"),
+    F.col("c.registration_date"),
+    F.coalesce(F.col("c.state"), F.col("up.state")).alias("state"),
+    F.col("up.birth_date").alias("birth_date"),
+    F.floor(F.datediff(F.current_date(), F.col("up.birth_date")) / 365.25).alias("age"),
+    F.col("up.phone_number").alias("phone_number"),
+    F.current_timestamp().alias("processed_at"),
+)
+```
+
+> 💡 **Rule of thumb:** After a join with aliases, do NOT chain `.withColumn()` calls that reference aliases. Use a single `.select()` instead. Each `.withColumn()` creates a new DataFrame, and Spark may lose track of which alias namespace a column belongs to.
+
+---
+
+### Issue 4: Parquet INT32 without `ConvertedType` — BigQuery rejects the load
+
+**Symptom:** `enrich_customers.py` successfully computed 47,469 enriched rows but failed writing to BigQuery:
+```
+BigQueryException: Got non-null value in column client_id of parquet type INT32.
+Parquet column requires appropriate ConvertedType to load.
+```
+
+After casting `client_id` to `LongType` (INT64), the same error persisted:
+```
+Got non-null value in column client_id of parquet type INT64.
+Parquet column requires appropriate ConvertedType to load.
+```
+
+**Root cause:** The `spark-bigquery-connector` uses an **indirect write method** by default:
+
+```
+Spark DataFrame → write Parquet to GCS → BigQuery LOAD JOB reads Parquet → table created
+```
+
+Spark's Parquet writer creates files with bare `INT32`/`INT64` physical types **without** the Parquet `ConvertedType` annotation (like `INT_32` or `INT_64`). BigQuery's Parquet loader requires these annotations to correctly interpret the data types. Without them, the load job fails.
+
+**Attempted fixes and results:**
+
+| Attempt | Option | Result |
+|---------|--------|--------|
+| 1 | Cast `client_id` to `LongType` (INT64) | ❌ Same error — INT64 also needs `ConvertedType` |
+| 2 | `.option("intermediateFormat", "avro")` | ❌ `spark-avro` module not included in Dataproc Serverless 2.1 runtime |
+| 3 | `.option("writeMethod", "direct")` | ✅ Bypasses Parquet entirely |
+
+**Fix:** Use the BigQuery Storage Write API (`direct` method) which streams data directly from Spark to BigQuery without intermediate files:
+```python
+enriched_df.write \
+    .format("bigquery") \
+    .option("table", bq_table) \
+    .option("writeMethod", "direct")   # ← bypasses intermediate Parquet
+    .mode("overwrite") \
+    .save()
+```
+
+**How `writeMethod` works:**
+
+| Method | Flow | Pros | Cons |
+|--------|------|------|------|
+| `indirect` (default) | Spark → Parquet/Avro on GCS → BQ Load Job | Simple, well-tested | Parquet `ConvertedType` issues, needs `temporaryGcsBucket`, slower |
+| `direct` | Spark → BigQuery Storage Write API | No intermediate files, no type annotation issues, faster | Requires `bigquerystorage.tables.create` permission |
+
+> ⚠️ The `indirect` method with Parquet intermediate format is a known compatibility issue between Spark's Parquet writer and BigQuery's Parquet loader. If you must use `indirect`, the only reliable intermediate format is Avro — but `spark-avro` must be available on the cluster (`--packages org.apache.spark:spark-avro_2.13:3.4.0`). Dataproc Serverless 2.1 does not include it by default.
+
+---
+
+### Issue 5: Incompatible schema — Old empty BigQuery table blocks overwrite
+
+**Symptom:** Even after fixing the write method to `direct`, the job still failed:
+```
+BigQueryConnectorException$InvalidSchemaException:
+Destination table's schema is not compatible with dataframe's schema
+```
+
+**Root cause:** A previous failed run of `enrich_customers.py` had created the `gold.user_profiles_enriched` table with a wrong schema:
+
+| Column | Old (wrong) table | New (correct) DataFrame |
+|--------|-------------------|------------------------|
+| `client_id` | STRING | INTEGER (INT64) |
+| `full_name` | present | absent |
+| `age` | absent | present |
+
+The `direct` write method with `mode("overwrite")` tries to overwrite the data but validates the schema first against the existing table. When the schemas are incompatible, it rejects the write.
+
+**Fix:** Drop the stale table before writing:
+```bash
+bq rm -f robot-dream-course:gold.user_profiles_enriched
+```
+
+Then the Spark job creates the table fresh with the correct schema.
+
+> 💡 This only happens when an old table exists with a different schema. Once the pipeline works, subsequent `mode("overwrite")` runs will succeed because the schema stays consistent.
+
+---
+
+### Issue 6: BigQuery dataset region mismatch — `silver` in `us-central1`, `gold` in `US`
+
+**Symptom:** The analytical query joining `silver.sales` and `gold.user_profiles_enriched` failed:
+```
+Not found: Dataset robot-dream-course:silver was not found in location US
+```
+
+**Root cause:** BigQuery cannot run cross-region queries. The two datasets were in different regions:
+
+| Dataset | Location | Created by |
+|---------|----------|------------|
+| `gold` | `US` | `spark-bigquery-connector` (defaults to `US` when not specified) |
+| `silver` | `us-central1` | Manual `bq mk --location=us-central1` |
+
+BigQuery determines the query's execution location from the tables referenced. With tables in different regions, the query can't locate one of them.
+
+**Fix:** Recreate the `silver` dataset in `US` to match `gold`:
+```bash
+# Drop tables first (dataset can't be deleted while non-empty)
+bq rm -f robot-dream-course:silver.sales
+bq rm -f --dataset robot-dream-course:silver
+
+# Recreate in US
+bq mk --dataset --location=US robot-dream-course:silver
+
+# Recreate external table
+bq query --use_legacy_sql=false \
+  'CREATE OR REPLACE EXTERNAL TABLE `robot-dream-course.silver.sales`
+   OPTIONS (format = "PARQUET",
+            uris = ["gs://robot-dream-course-data-lake/silver/sales/*.parquet"])'
+```
+
+> 💡 External tables in BigQuery can reference GCS data in any region — only the BigQuery **dataset metadata** must be co-located. So a `silver` dataset in `US` can point to Parquet files in a `us-central1` bucket.
+
+> ⚠️ The `spark-bigquery-connector` creates datasets in `US` by default when they don't exist. To control this, either pre-create the dataset with the desired location or set the `createDisposition` option.
+
+---
+
+### Issue 7: Dataproc Serverless quota exhaustion — CPU and disk
+
+**Symptom:** Batch submissions failed intermittently with:
+```
+Insufficient 'CPUS_ALL_REGIONS' quota. Requested 12.0, available 0.0.
+Insufficient 'DISKS_TOTAL_GB' quota. Requested 1200.0, available 848.0.
+```
+
+**Root cause:** Each Dataproc Serverless batch requires **12 vCPUs** (1 driver × 4 + 2 executors × 4) and **1,200 GB disk** (400 GB × 3 nodes). The project quota was exactly 12 vCPUs. Failed batches don't release quota instantly — GCE needs time (~30–90 seconds) to deprovision the underlying VMs and free the quota.
+
+Running multiple batches rapidly (especially after failures) caused quota pile-up.
+
+**Fix:** Wait 60–90 seconds between batch submissions after failures. For long-term reliability:
+```bash
+# Check current quota usage
+gcloud compute project-info describe --project=robot-dream-course \
+  --format="json(quotas)" | python3 -c "
+import sys, json
+for q in json.load(sys.stdin)['quotas']:
+    if 'CPU' in q['metric'] or 'DISK' in q['metric']:
+        print(f\"{q['metric']}: {q['usage']}/{q['limit']}\")"
+
+# Check for stuck/running batches
+gcloud dataproc batches list --project=robot-dream-course \
+  --region=us-central1 --filter="state=RUNNING OR state=PENDING" \
+  --format="table(name.basename(),state)"
+```
+
+---
+
+### Summary: Full Error Chain
+
+| # | Error | Layer | Root cause | Fix |
+|---|-------|-------|------------|-----|
+| 1 | 0 rows in bronze | Spark read | No `recursiveFileLookup` for nested GCS dirs | `.option("recursiveFileLookup", "true")` |
+| 2 | `COLUMN_ALREADY_EXISTS` | Spark write | `Price` + `price` both in DataFrame | `.select()` with explicit columns |
+| 3 | `UNRESOLVED_COLUMN: up.birth_date` | Spark transform | `.withColumn()` chain breaks alias resolution | Single `.select()` for all alias refs |
+| 4 | `Parquet INT32 without ConvertedType` | BQ load | Spark's Parquet lacks type annotations BQ needs | `.option("writeMethod", "direct")` |
+| 5 | `InvalidSchemaException` | BQ write | Old table had wrong schema | `bq rm -f` the stale table |
+| 6 | `Dataset not found in location US` | BQ query | `silver` in `us-central1`, `gold` in `US` | Recreate `silver` dataset in `US` |
+| 7 | `Insufficient quota` | GCE infra | 12/12 vCPU quota, slow release after failures | Wait between runs, request quota increase |

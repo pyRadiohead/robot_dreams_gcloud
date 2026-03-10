@@ -67,30 +67,20 @@ joined_df = (
 )
 
 # ── 5. Enrich — fill nulls from user_profiles, add new fields ───────────────
-enriched_df = (
-    joined_df
-    # Fill missing customer fields from user_profiles
-    .withColumn("first_name", F.coalesce(F.col("c.first_name"), F.col("up.first_name")))
-    .withColumn("last_name",  F.coalesce(F.col("c.last_name"),  F.col("up.last_name")))
-    .withColumn("state",      F.coalesce(F.col("c.state"),      F.col("up.state")))
-    # New fields from user_profiles
-    .withColumn("birth_date",   F.col("up.birth_date"))
-    .withColumn("phone_number", F.col("up.phone_number"))
-    # Derived field: age in full years
-    .withColumn("age", F.floor(F.datediff(F.current_date(), F.col("up.birth_date")) / 365.25))
-    # Select final schema — only customer columns + enriched fields
-    .select(
-        F.col("c.client_id"),
-        F.col("email"),
-        F.col("first_name"),
-        F.col("last_name"),
-        F.col("c.registration_date"),
-        F.col("state"),
-        F.col("birth_date"),
-        F.col("age"),
-        F.col("phone_number"),
-        F.current_timestamp().alias("processed_at"),
-    )
+#       Use a single .select() so all alias references (c.*, up.*) resolve in
+#       one pass.  Chaining .withColumn() would break alias resolution because
+#       each call mutates the DataFrame schema and invalidates prior aliases.
+enriched_df = joined_df.select(
+    F.col("c.client_id").cast("long"),
+    F.col("email"),
+    F.coalesce(F.col("c.first_name"), F.col("up.first_name")).alias("first_name"),
+    F.coalesce(F.col("c.last_name"),  F.col("up.last_name")).alias("last_name"),
+    F.col("c.registration_date"),
+    F.coalesce(F.col("c.state"), F.col("up.state")).alias("state"),
+    F.col("up.birth_date").alias("birth_date"),
+    F.floor(F.datediff(F.current_date(), F.col("up.birth_date")) / 365.25).alias("age"),
+    F.col("up.phone_number").alias("phone_number"),
+    F.current_timestamp().alias("processed_at"),
 )
 
 enriched_count = enriched_df.count()
@@ -103,6 +93,7 @@ bq_table = f"{args.bq_project}.{args.bq_dataset}.{args.bq_table}"
     enriched_df.write
     .format("bigquery")
     .option("table", bq_table)
+    .option("writeMethod", "direct")
     .mode("overwrite")
     .save()
 )

@@ -56,7 +56,7 @@ with DAG(
             "pyspark_batch": {
                 "main_python_file_uri": PYSPARK_RAW_TO_BRONZE_URI,
                 "args": [
-                    f"--raw_input=gs://{DATA_LAKE}/raw/customers/",
+                    f"--raw_input=gs://{DATA_LAKE}/raw/data/customers/",
                     f"--bronze_output=gs://{DATA_LAKE}/bronze/customers/",
                 ],
             },
